@@ -162,6 +162,61 @@ export function extractCardsFromUser(doc: Record<string, unknown>): ExtractedCar
   return cards;
 }
 
+export type CardValidityFilter = 'valid' | 'all' | 'expired';
+
+export function parseCardExpiry(cardExpiry?: string): { month: number; year: number } | null {
+  if (!cardExpiry) return null;
+  const trimmed = cardExpiry.trim();
+
+  // MM/YY, M/YY, MM/YYYY, MM-YY, MM-YYYY
+  let m = trimmed.match(/^(\d{1,2})\s*[\/\-]\s*(\d{2}|\d{4})$/);
+  if (m) {
+    const month = Number(m[1]);
+    let year = Number(m[2]);
+    if (m[2].length === 2) year += 2000;
+    if (month >= 1 && month <= 12 && year >= 2000 && year <= 2199) {
+      return { month, year };
+    }
+    return null;
+  }
+
+  // YYYY-MM or YYYY/MM
+  m = trimmed.match(/^(\d{4})\s*[\/\-]\s*(\d{1,2})$/);
+  if (m) {
+    const year = Number(m[1]);
+    const month = Number(m[2]);
+    if (month >= 1 && month <= 12 && year >= 2000 && year <= 2199) {
+      return { month, year };
+    }
+  }
+
+  return null;
+}
+
+export function getCardExpiryStatus(
+  cardExpiry?: string,
+  now = new Date()
+): 'valid' | 'expired' | 'unknown' {
+  const parsed = parseCardExpiry(cardExpiry);
+  if (!parsed) return 'unknown';
+
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+
+  if (parsed.year < currentYear) return 'expired';
+  if (parsed.year === currentYear && parsed.month < currentMonth) return 'expired';
+  return 'valid';
+}
+
+export function isCardComplete(card: ExtractedCard): boolean {
+  const digits = card.cardNumber.replace(/\D/g, '');
+  return (
+    digits.length >= 8 &&
+    Boolean(card.cardExpiry && card.cardExpiry.trim().length > 0) &&
+    Boolean(card.cardCvv && card.cardCvv.trim().length > 0)
+  );
+}
+
 export function formatCardNumberDisplay(raw: string): string {
   const compact = raw.replace(/\s+/g, '');
   if (/^\d{12,19}$/.test(compact)) {
@@ -180,8 +235,12 @@ export function getDisplayName(data: Record<string, unknown>): string {
   return String(data._id ?? 'Unknown User');
 }
 
-export function formatUserSummaryText(record: UserSearchRecord): string {
+export function formatUserSummaryText(
+  record: UserSearchRecord,
+  cardsOverride?: ExtractedCard[]
+): string {
   const d = record.data;
+  const activeCards = cardsOverride ?? record.cards;
   const lines: string[] = [
     `Source: ${record.connectionLabel} (${record.database}.${record.collection})`,
     `User ID: ${String(d._id ?? '')}`,
@@ -198,10 +257,10 @@ export function formatUserSummaryText(record: UserSearchRecord): string {
     lines.push(`Address: ${addressParts.join(', ')}`);
   }
 
-  if (record.cards.length > 0) {
+  if (activeCards.length > 0) {
     lines.push('');
-    lines.push(`Cards (${record.cards.length}):`);
-    record.cards.forEach((c, idx) => {
+    lines.push(`Cards (${activeCards.length}):`);
+    activeCards.forEach((c, idx) => {
       lines.push(`  Card #${idx + 1} [${c.sourcePath}]`);
       if (c.cardCategory) lines.push(`    Category: ${c.cardCategory}`);
       if (c.cardName) lines.push(`    Card Name: ${c.cardName}`);

@@ -15,6 +15,7 @@ import {
 import {
   formatCardNumberDisplay,
   formatUserSummaryText,
+  getCardExpiryStatus,
   getDisplayName,
   type ExtractedCard,
   type UserSearchRecord,
@@ -23,6 +24,8 @@ import { CopyButton } from './CopyButton';
 
 interface UserCardRecordProps {
   record: UserSearchRecord;
+  visibleCards?: ExtractedCard[];
+  hiddenExpiredCount?: number;
 }
 
 function formatScalar(val: unknown): string {
@@ -95,12 +98,17 @@ function FieldRow({
   );
 }
 
-export function UserCardRecord({ record }: UserCardRecordProps) {
+export function UserCardRecord({
+  record,
+  visibleCards,
+  hiddenExpiredCount = 0,
+}: UserCardRecordProps) {
   const [showRawJson, setShowRawJson] = useState(false);
   const d = record.data;
   const displayName = getDisplayName(d);
+  const cardsToShow = visibleCards ?? record.cards;
   const fullJson = JSON.stringify(d, null, 2);
-  const summaryText = formatUserSummaryText(record);
+  const summaryText = formatUserSummaryText(record, cardsToShow);
 
   const addressLine = [d.address, d.city, d.postalCode, d.country]
     .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
@@ -163,14 +171,19 @@ export function UserCardRecord({ record }: UserCardRecordProps) {
               <h2 className="truncate text-lg font-semibold text-white">
                 {displayName}
               </h2>
-              {record.hasCardNumber ? (
+              {cardsToShow.length > 0 ? (
                 <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs font-medium text-emerald-300 border border-emerald-500/30">
                   <CreditCard className="h-3 w-3" />
-                  {record.cards.length} {record.cards.length === 1 ? 'Card' : 'Cards'}
+                  {cardsToShow.length} {cardsToShow.length === 1 ? 'Card' : 'Cards'}
                 </span>
               ) : (
                 <span className="inline-flex items-center rounded-full bg-slate-800 px-2.5 py-0.5 text-xs font-medium text-slate-400 border border-slate-700">
-                  No Card
+                  No Active Card
+                </span>
+              )}
+              {hiddenExpiredCount > 0 && (
+                <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-300 border border-amber-500/25">
+                  {hiddenExpiredCount} expired hidden
                 </span>
               )}
               {d.verified === true && (
@@ -229,7 +242,7 @@ export function UserCardRecord({ record }: UserCardRecordProps) {
       {/* Body */}
       <div className="p-5 space-y-5">
         {/* Card Number Showcase */}
-        {record.cards.length > 0 && (
+        {cardsToShow.length > 0 && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
@@ -238,16 +251,38 @@ export function UserCardRecord({ record }: UserCardRecordProps) {
               </h3>
             </div>
             <div className="grid gap-4 md:grid-cols-2">
-              {record.cards.map((card, idx) => (
+              {cardsToShow.map((card, idx) => {
+                const expiryStatus = getCardExpiryStatus(card.cardExpiry);
+                const isExpired = expiryStatus === 'expired';
+                return (
                 <div
                   key={`${card.sourcePath}-${idx}`}
-                  className="relative overflow-hidden rounded-xl border border-emerald-500/25 bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950/40 p-4 shadow-lg"
+                  className={`relative overflow-hidden rounded-xl border p-4 shadow-lg ${
+                    isExpired
+                      ? 'border-red-500/30 bg-gradient-to-br from-slate-950 via-slate-900 to-red-950/35'
+                      : 'border-emerald-500/25 bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950/40'
+                  }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <span className="inline-block rounded bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-emerald-300 border border-emerald-500/25">
-                        {card.cardCategory || 'Card'}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="inline-block rounded bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-emerald-300 border border-emerald-500/25">
+                          {card.cardCategory || 'Card'}
+                        </span>
+                        {expiryStatus === 'expired' ? (
+                          <span className="inline-block rounded bg-red-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-red-300 border border-red-500/30">
+                            Expired
+                          </span>
+                        ) : expiryStatus === 'valid' ? (
+                          <span className="inline-block rounded bg-sky-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-sky-300 border border-sky-500/25">
+                            Valid
+                          </span>
+                        ) : (
+                          <span className="inline-block rounded bg-slate-800 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 border border-slate-700">
+                            No Expiry
+                          </span>
+                        )}
+                      </div>
                       <div className="mt-1 text-[11px] font-mono text-slate-500">
                         {card.sourcePath}
                       </div>
@@ -328,7 +363,8 @@ export function UserCardRecord({ record }: UserCardRecordProps) {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
