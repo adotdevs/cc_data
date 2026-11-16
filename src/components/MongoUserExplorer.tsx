@@ -8,9 +8,11 @@ import {
   Database,
   Filter,
   LogOut,
+  Plus,
   RefreshCw,
   RotateCcw,
   Search,
+  Trash2,
   Users,
   Wifi,
   WifiOff,
@@ -24,6 +26,7 @@ import {
   type ExtractedCard,
   type UserSearchRecord,
 } from '@/lib/card-utils';
+import { AddConnectionPanel } from './AddConnectionPanel';
 import { CopyButton } from './CopyButton';
 import { UserCardRecord } from './UserCardRecord';
 
@@ -90,6 +93,8 @@ export function MongoUserExplorer() {
 
   const [refreshTick, setRefreshTick] = useState(0);
   const [locking, setLocking] = useState(false);
+  const [showAddConnection, setShowAddConnection] = useState(false);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [data, setData] = useState<SearchResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -163,6 +168,42 @@ export function MongoUserExplorer() {
       router.refresh();
       setLocking(false);
     }
+  }
+
+  async function handleDeleteCustomConnection(key: string, label: string) {
+    if (deletingKey) return;
+    setDeletingKey(key);
+    try {
+      const res = await fetch(`/api/connections?key=${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+      });
+      if (res.status === 401) {
+        router.refresh();
+        return;
+      }
+      if (!res.ok) {
+        const json = (await res.json()) as { error?: string };
+        setError(json.error ?? `Failed to delete connection "${label}"`);
+        return;
+      }
+      if (selectedConnection === key) {
+        setSelectedConnection('all');
+      }
+      setLoading(true);
+      setRefreshTick((t) => t + 1);
+    } catch {
+      setError(`Network error while removing connection "${label}"`);
+    } finally {
+      setDeletingKey(null);
+    }
+  }
+
+  function handleConnectionSaved() {
+    setShowAddConnection(false);
+    setSelectedConnection('all');
+    setLoading(true);
+    setError(null);
+    setRefreshTick((t) => t + 1);
   }
 
   function resetAllFilters() {
@@ -390,6 +431,19 @@ export function MongoUserExplorer() {
 
               <button
                 type="button"
+                onClick={() => setShowAddConnection((v) => !v)}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-3 text-xs font-semibold transition cursor-pointer ${
+                  showAddConnection
+                    ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-200'
+                    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
+                }`}
+              >
+                <Plus className="h-4 w-4" />
+                <span>Add MongoDB</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={handleLock}
                 disabled={locking}
                 title="Lock dashboard (sign out)"
@@ -400,6 +454,14 @@ export function MongoUserExplorer() {
               </button>
             </div>
           </div>
+
+          {showAddConnection && (
+            <AddConnectionPanel
+              onClose={() => setShowAddConnection(false)}
+              onSaved={handleConnectionSaved}
+              onUnauthorized={() => router.refresh()}
+            />
+          )}
 
           {/* Search Form & Filter Controls */}
           <form onSubmit={handleFormSubmit} className="mt-6 space-y-4">
@@ -608,17 +670,11 @@ export function MongoUserExplorer() {
 
                 {data.connections.map((conn) => {
                   const isSelected = selectedConnection === conn.key;
+                  const isDeleting = deletingKey === conn.key;
                   return (
-                    <button
+                    <div
                       key={conn.key}
-                      type="button"
-                      onClick={() => handleSelectConnection(conn.key)}
-                      title={
-                        conn.connected
-                          ? `${conn.label} · Online (${conn.latencyMs}ms) · DBs: ${conn.databases.join(', ') || 'none'} · ${conn.totalUsers} users (${conn.cardUsers} with cardNumber)`
-                          : `${conn.label} · Offline: ${conn.error ?? 'Unreachable'}`
-                      }
-                      className={`inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium border transition cursor-pointer ${
+                      className={`inline-flex items-center rounded-lg border transition ${
                         isSelected
                           ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-200'
                           : conn.connected
@@ -626,22 +682,51 @@ export function MongoUserExplorer() {
                             : 'border-red-950/70 bg-red-950/20 text-slate-400 hover:border-red-900/70'
                       }`}
                     >
-                      {conn.connected ? (
-                        <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                      ) : (
-                        <WifiOff className="h-3 w-3 text-red-400" />
-                      )}
-                      <span>{conn.label}</span>
-                      <span
-                        className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${
-                          conn.cardUsers > 0
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : 'bg-black/30 text-slate-400'
-                        }`}
+                      <button
+                        type="button"
+                        onClick={() => handleSelectConnection(conn.key)}
+                        title={
+                          conn.connected
+                            ? `${conn.label} (${conn.source}) · ${conn.maskedHost ?? ''} · Online (${conn.latencyMs}ms) · DBs: ${conn.databases.join(', ') || 'none'} · ${conn.totalUsers} users (${conn.cardUsers} with cardNumber)`
+                            : `${conn.label} (${conn.source}) · ${conn.maskedHost ?? ''} · Offline: ${conn.error ?? 'Unreachable'}`
+                        }
+                        className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium cursor-pointer"
                       >
-                        {conn.connected ? conn.cardUsers : 'off'}
-                      </span>
-                    </button>
+                        {conn.connected ? (
+                          <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                        ) : (
+                          <WifiOff className="h-3 w-3 text-red-400" />
+                        )}
+                        <span>{conn.label}</span>
+                        {conn.source === 'custom' && (
+                          <span className="rounded bg-cyan-500/15 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-cyan-300">
+                            custom
+                          </span>
+                        )}
+                        <span
+                          className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${
+                            conn.cardUsers > 0
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : 'bg-black/30 text-slate-400'
+                          }`}
+                        >
+                          {conn.connected ? conn.cardUsers : 'off'}
+                        </span>
+                      </button>
+
+                      {conn.source === 'custom' && (
+                        <button
+                          type="button"
+                          disabled={isDeleting}
+                          onClick={() => void handleDeleteCustomConnection(conn.key, conn.label)}
+                          title={`Remove custom connection "${conn.label}"`}
+                          aria-label={`Remove ${conn.label}`}
+                          className="mr-1 rounded p-1 text-slate-400 hover:bg-red-500/20 hover:text-red-300 cursor-pointer disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>

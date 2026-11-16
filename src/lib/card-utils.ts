@@ -23,6 +23,8 @@ export interface UserSearchRecord {
 export interface ConnectionStatusInfo {
   key: string;
   label: string;
+  source: 'env' | 'custom';
+  maskedHost?: string;
   connected: boolean;
   error?: string;
   latencyMs: number;

@@ -5,11 +5,14 @@ import {
   type ConnectionStatusInfo,
   type UserSearchRecord,
 } from './card-utils';
+import { maskMongoUriHost, readCustomConnections } from './connection-store';
 
 export interface ConfiguredConnection {
   key: string;
   label: string;
   uri: string;
+  source: 'env' | 'custom';
+  maskedHost: string;
 }
 
 const FRIENDLY_LABELS: Record<string, string> = {
@@ -71,10 +74,112 @@ export function getConfiguredConnections(): ConfiguredConnection[] {
         .toLowerCase()
         .replace(/_/g, '-');
 
-    connections.push({ key, label, uri });
+    connections.push({
+      key,
+      label,
+      uri,
+      source: 'env',
+      maskedHost: maskMongoUriHost(uri),
+    });
+  }
+
+  for (const custom of readCustomConnections()) {
+    const uri = custom.uri.trim();
+    if (!uri || seenUris.has(uri)) continue;
+    seenUris.add(uri);
+    connections.push({
+      key: custom.key,
+      label: custom.label,
+      uri,
+      source: 'custom',
+      maskedHost: maskMongoUriHost(uri),
+    });
   }
 
   return connections.sort((a, b) => a.label.localeCompare(b.label));
+}
+
+export async function removeCachedClient(key: string): Promise<void> {
+  const pool = getClientPool();
+  const existing = pool.get(key);
+  if (!existing) return;
+  pool.delete(key);
+  try {
+    const client = await existing.promise;
+    await client.close();
+  } catch {
+    // ignore errors from failed client
+  }
+}
+
+export async function testMongoConnection(uri: string): Promise<{
+  ok: boolean;
+  latencyMs: number;
+  databases: string[];
+  totalUsers: number;
+  cardUsers: number;
+  error?: string;
+}> {
+  const started = Date.now();
+  const client = new MongoClient(uri, {
+    serverSelectionTimeoutMS: 5000,
+    connectTimeoutMS: 5000,
+    socketTimeoutMS: 8000,
+    maxPoolSize: 2,
+  });
+
+  try {
+    await client.connect();
+    const databases = await listAccessibleDatabases(client);
+    const cardFilter = buildCardNumberFilter();
+    let totalUsers = 0;
+    let cardUsers = 0;
+
+    await Promise.all(
+      databases.map(async (dbName) => {
+        const db = client.db(dbName);
+        const collections = await db.listCollections().toArray();
+        const userCols = collections
+          .map((c) => c.name)
+          .filter(
+            (name) =>
+              USER_COLLECTION_PATTERN.test(name) &&
+              !EXCLUDED_USER_COLLECTIONS.has(name.toLowerCase())
+          );
+
+        await Promise.all(
+          userCols.map(async (colName) => {
+            const col = db.collection(colName);
+            const [totalCount, cardCount] = await Promise.all([
+              col.estimatedDocumentCount(),
+              col.countDocuments(cardFilter),
+            ]);
+            totalUsers += totalCount;
+            cardUsers += cardCount;
+          })
+        );
+      })
+    );
+
+    return {
+      ok: true,
+      latencyMs: Date.now() - started,
+      databases,
+      totalUsers,
+      cardUsers,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      latencyMs: Date.now() - started,
+      databases: [],
+      totalUsers: 0,
+      cardUsers: 0,
+      error: err instanceof Error ? err.message : 'Connection failed',
+    };
+  } finally {
+    await client.close().catch(() => {});
+  }
 }
 
 async function getConnectedClient(conn: ConfiguredConnection): Promise<MongoClient> {
@@ -260,6 +365,8 @@ export async function searchUsersAcrossConnections({
       const status: ConnectionStatusInfo = {
         key: conn.key,
         label: conn.label,
+        source: conn.source,
+        maskedHost: conn.maskedHost,
         connected: false,
         latencyMs: 0,
         databases: [],
