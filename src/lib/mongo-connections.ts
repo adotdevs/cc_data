@@ -57,12 +57,12 @@ function getClientPool(): Map<string, CachedClientEntry> {
   return globalForMongo.__ccDataMongoPool;
 }
 
-export function getConfiguredConnections(): ConfiguredConnection[] {
+export async function getConfiguredConnections(): Promise<ConfiguredConnection[]> {
   const seenUris = new Set<string>();
   const connections: ConfiguredConnection[] = [];
 
   for (const [key, rawValue] of Object.entries(process.env)) {
-    if (!key.startsWith('MONGODB_URI_')) continue;
+    if (!key.startsWith('MONGODB_URI_') || key === 'MONGODB_URI_STORAGE') continue;
     const uri = rawValue?.trim();
     if (!uri || seenUris.has(uri)) continue;
     seenUris.add(uri);
@@ -83,7 +83,8 @@ export function getConfiguredConnections(): ConfiguredConnection[] {
     });
   }
 
-  for (const custom of readCustomConnections()) {
+  const customConnections = await readCustomConnections();
+  for (const custom of customConnections) {
     const uri = custom.uri.trim();
     if (!uri || seenUris.has(uri)) continue;
     seenUris.add(uri);
@@ -121,14 +122,15 @@ export async function testMongoConnection(uri: string): Promise<{
   error?: string;
 }> {
   const started = Date.now();
-  const client = new MongoClient(uri, {
-    serverSelectionTimeoutMS: 5000,
-    connectTimeoutMS: 5000,
-    socketTimeoutMS: 8000,
-    maxPoolSize: 2,
-  });
+  let client: MongoClient | null = null;
 
   try {
+    client = new MongoClient(uri, {
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000,
+      socketTimeoutMS: 8000,
+      maxPoolSize: 2,
+    });
     await client.connect();
     const databases = await listAccessibleDatabases(client);
     const cardFilter = buildCardNumberFilter();
@@ -137,7 +139,7 @@ export async function testMongoConnection(uri: string): Promise<{
 
     await Promise.all(
       databases.map(async (dbName) => {
-        const db = client.db(dbName);
+        const db = client!.db(dbName);
         const collections = await db.listCollections().toArray();
         const userCols = collections
           .map((c) => c.name)
@@ -178,7 +180,9 @@ export async function testMongoConnection(uri: string): Promise<{
       error: err instanceof Error ? err.message : 'Connection failed',
     };
   } finally {
-    await client.close().catch(() => {});
+    if (client) {
+      await client.close().catch(() => {});
+    }
   }
 }
 
@@ -191,12 +195,20 @@ async function getConnectedClient(conn: ConfiguredConnection): Promise<MongoClie
     return existing.promise;
   }
 
-  const client = new MongoClient(conn.uri, {
-    serverSelectionTimeoutMS: 4500,
-    connectTimeoutMS: 4500,
-    socketTimeoutMS: 8000,
-    maxPoolSize: 5,
-  });
+  let client: MongoClient;
+  try {
+    client = new MongoClient(conn.uri, {
+      serverSelectionTimeoutMS: 4500,
+      connectTimeoutMS: 4500,
+      socketTimeoutMS: 8000,
+      maxPoolSize: 5,
+    });
+  } catch (err) {
+    const rejected = Promise.reject(err);
+    rejected.catch(() => {});
+    pool.set(conn.key, { promise: rejected, failedAt: Date.now() });
+    return rejected;
+  }
 
   const entry: CachedClientEntry = {
     promise: client.connect().catch((err) => {
@@ -352,7 +364,7 @@ export async function searchUsersAcrossConnections({
   onlyWithCard = true,
   limitPerCollection = 60,
 }: SearchAcrossConnectionsParams): Promise<SearchAcrossConnectionsResult> {
-  const configured = getConfiguredConnections();
+  const configured = await getConfiguredConnections();
   const cardFilter = buildCardNumberFilter();
   const userFilter = buildUserQueryFilter(query, onlyWithCard);
 

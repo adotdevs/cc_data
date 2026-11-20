@@ -52,14 +52,20 @@ export function AddConnectionPanel({
         onUnauthorized();
         return;
       }
-      const json = (await res.json()) as {
+      const text = await res.text();
+      let json: {
         ok?: boolean;
         latencyMs?: number;
         databases?: string[];
         totalUsers?: number;
         cardUsers?: number;
         error?: string;
-      };
+      } = {};
+      try {
+        json = JSON.parse(text) as typeof json;
+      } catch {
+        json = { error: `Server returned ${res.status}: ${text.slice(0, 160) || res.statusText}` };
+      }
 
       if (res.ok && json.ok) {
         const dbs = json.databases?.length ? json.databases.join(', ') : 'none';
@@ -104,12 +110,18 @@ export function AddConnectionPanel({
         onUnauthorized();
         return;
       }
-      const json = (await res.json()) as {
+      const text = await res.text();
+      let json: {
         ok?: boolean;
         error?: string;
         canSaveOffline?: boolean;
         connection?: { key: string; label: string };
-      };
+      } = {};
+      try {
+        json = JSON.parse(text) as typeof json;
+      } catch {
+        json = { error: `Server returned ${res.status}: ${text.slice(0, 160) || res.statusText}` };
+      }
 
       if (!res.ok || !json.ok || !json.connection) {
         setFeedback({
